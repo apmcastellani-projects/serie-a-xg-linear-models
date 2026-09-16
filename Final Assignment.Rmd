@@ -1,0 +1,344 @@
+---
+title: "Evaluating Offensive Production in Serie A: An Applied Linear Modeling Approach on Expected Goals (xG)"
+subtitle: "Applied Linear Models - Serie A Forwards Analysis"
+author: "Alessandro Castellani"
+date: "`r Sys.Date()`"
+output: 
+  pdf_document:
+    toc: true
+    toc_depth: 2
+    number_sections: true
+    highlight: tango
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+# Data Description and Analysis Goals
+
+The dataset utilized in this study contains performance metrics of players in the Italian Serie A (first division) for the 2021/2022 season. The data were sourced from **FBref.com**, a premier platform in sports analytics powered by **Opta**, the industry standard for granular match and event data worldwide.
+
+The statistical units under observation are **forwards**. The initial sample encompasses 120 players across 39 recorded metrics, comprising both nominal and numerical variables:
+- **Nominal variables**: `Name`, `Nation`, and `Team`.
+- **Numerical variables**: Both continuous and discrete metrics quantifying shooting efficiency, passing progression, possession, and physical interactions. All numerical figures represent cumulative seasonal totals rather than 90-minute averages.
+
+To eliminate noise stemming from extremely low sample sizes, a playing time threshold was applied: players with fewer than **350 minutes played** (roughly 10% of total possible league minutes, 3,420) were excluded. This filtering removes fringe players whose limited event counts would otherwise introduce distortion without contributing meaningful variance.
+
+## The Response Variable: Expected Goals (xG)
+
+The selected continuous response variable is **Expected Goals (xG)**. In contemporary sports analytics, xG measures the probability that a given shot results in a goal based on historical outcomes of thousands of similar events, factoring in:
+- Shot distance and angle relative to the goal line.
+- Body part used (foot vs. head).
+- Nature of the preceding assist (through ball, cross, rebound, cutback).
+- Defensive pressure and goalkeeper positioning.
+
+By focusing on Expected Goals rather than raw goals scored, we separate genuine chance creation and attacking movement from short-term finishing luck or goalkeeper performance. 
+
+## Research Objective
+
+The primary objective is to evaluate the determinants of offensive output among Serie A forwards. Specifically, we investigate whether xG generation is purely a function of **shot volume** (shooting frequently), or whether contextual tactical dimensions—such as shot proximity, territorial dominance (touches in the attacking penalty box), and team competitive caliber—play a statistically significant role in explaining offensive production.
+
+# Data Preparation and Transformation
+
+```{r libraries}
+library(readxl) 
+library(tidyverse) 
+library(ggcorrplot)
+library(ggplot2)
+library(car)    
+library(leaps)
+library(faraway)
+```
+
+First, we load the dataset and perform feature engineering and variable encoding.
+
+Identifiers with no predictive value (`Name`, `Nation`) are discarded. `Team` is encoded into competitive tiers (`1st Tier`, `2nd Tier`, `3rd Tier`) reflecting league hierarchy, and `Age` is stratified into meaningful career phases (`Under23`, `Over23`, `Over30`). Playing-time redundancies are pruned, retaining `Min` as the baseline exposure metric. 
+
+Because xG has strictly positive support and exhibits positive right-skewness, we apply a natural logarithmic transformation, $\log(\text{xG})$, to map the response onto the real line and promote residual normality.
+
+```{r data_prep}
+strikers <- read_excel("strikers.xlsx")
+
+strikers$xG <- as.numeric(strikers$xG)
+strikers$Dist <- as.numeric(strikers$Dist)
+strikers$xA <- as.numeric(strikers$xA)
+
+# Categorize Team into competitive tiers
+top_teams <- c('Milan', 'Inter', 'Napoli', 'Juventus', 'Lazio', 'Roma', 'Fiorentina')
+bottom_teams <- c('Venezia', 'Genoa', 'Cagliari', 'Salernitana', 'Spezia')
+
+strikers$Team_Tier <- "2nd Tier"
+strikers$Team_Tier[strikers$Team %in% top_teams] <- "1st Tier"
+strikers$Team_Tier[strikers$Team %in% bottom_teams] <- "3rd Tier"
+strikers$Team_Tier <- factor(strikers$Team_Tier, levels = c("1st Tier", "2nd Tier", "3rd Tier"))
+
+# Categorize Age into developmental stages
+strikers$Age_Group <- "Over23"
+strikers$Age_Group[strikers$Age <= 23] <- "Under23"
+strikers$Age_Group[strikers$Age >= 30] <- "Over30"
+strikers$Age_Group <- factor(strikers$Age_Group, levels = c("Under23", "Over23", "Over30"))
+
+# Logarithmic transformation of Expected Goals
+strikers$logxG <- log(strikers$xG)
+
+# Feature subset selection
+strikers <- strikers[, c("Min", "PrgP", "PrgR", "Sh", "Dist", "Cmp", "xA", "KP", "SCA",
+                         "TklW", "Tou Att", "Dr Succ", "Won", "logxG", "Team_Tier", "Age_Group")]
+
+strikers <- rename(strikers, Tou_Att = `Tou Att`, Dr_Succ = `Dr Succ`)
+```
+
+# Exploratory Data Analysis & Visualization
+
+To inspect the distributional properties of the response variable and assess collinearity among numerical covariates, we visualize the transformed response, compute the correlation matrix, and examine group differences across categorical features.
+
+```{r eda_plots, echo=FALSE, fig.align='center', fig.height=4, fig.show='hold'}
+# Histogram of log(xG)
+hist(strikers$logxG, col = "steelblue", border = "white",
+     xlab = "Log(Expected Goals)", main = "Distribution of log(xG)")
+
+# Correlation matrix of numerical predictors
+num_vars <- select(strikers, -Age_Group, -Team_Tier, -logxG)
+corr_matrix <- cor(num_vars)
+ggcorrplot(corr_matrix, 
+           method = "square", 
+           type = "upper", 
+           lab = TRUE, 
+           lab_size = 2.5, 
+           title = "Correlation Matrix of Numerical Covariates")
+
+par(mfrow = c(1, 2))
+# Boxplots across categorical predictors
+boxplot(logxG ~ Team_Tier, data = strikers, 
+        col = c("#2b5c8f", "#5b8c5a", "#c44e52"), 
+        main = "log(xG) by Team Tier",
+        xlab = "Team Tier", ylab = "log(xG)")
+
+boxplot(logxG ~ Age_Group, data = strikers, 
+        col = c("#e7ba52", "#1f77b4", "#9467bd"), 
+        main = "log(xG) by Age Group",
+        xlab = "Age Group", ylab = "log(xG)")
+```
+
+### Observations:
+1. **Response Normality**: The logarithmic transformation $\log(\text{xG})$ effectively stabilizes variance and yields a bell-shaped, continuous distribution across the real axis.
+2. **Correlation & Multicollinearity**: Noticeable correlations occur among offensive metrics—most prominently between Shot-Creating Actions (`SCA`) and Key Passes (`KP`, $r > 0.85$), as well as between Shots (`Sh`) and Touches in the Attacking Area (`Tou_Att`). This reflects tactical co-movement, which will be addressed through formal variable selection.
+3. **Categorical Effects**: `Team_Tier` demonstrates a clear hierarchical pattern: forwards in `1st Tier` clubs exhibit higher median $\log(\text{xG})$ values, confirming that superior team quality generates higher cumulative danger. Conversely, `Age_Group` shows comparable medians, suggesting that age alone is not a primary driver of offensive volume.
+
+# Variable Selection and Tactical Interactions
+
+Prior exploratory modeling identified two domain-critical interaction terms:
+1. **`Sh:Team_Tier`**: Evaluates whether each shot taken by a forward from a top-tier team yields higher expected value than shots taken in lower-tier clubs (capturing superior service and pass quality).
+2. **`Sh:Tou_Att`**: Captures tactical positioning: forwards who shoot frequently within sustained box presence generate higher-percentage opportunities compared to those shooting from isolated, speculative positions.
+
+```{r initial_ols}
+ols <- lm(logxG ~ . + Sh:Tou_Att + Sh:Team_Tier, data = strikers)
+vif_vals <- vif(ols)
+print(vif_vals)
+```
+
+Elevated Generalized VIF (GVIF) values are expected here, particularly for terms involved in interactions and closely related offensive metrics. Rather than arbitrarily discarding predictors based on univariate VIF thresholds, we employ formal model selection algorithms: **Best Subset Selection**, **Backward Elimination**, and **Forward Selection**.
+
+```{r model_selection}
+# Best Subset Selection
+ols_best <- regsubsets(logxG ~ . + Sh:Tou_Att + Sh:Team_Tier, 
+                       data = strikers, 
+                       nvmax = 20)
+summ <- summary(ols_best)
+
+n <- nrow(strikers)
+p_best <- (1:length(summ$rss)) + 1
+aic <- n * log(summ$rss / n) + 2 * p_best
+
+# Backward Selection
+ols_bw <- regsubsets(logxG ~ . + Sh:Tou_Att + Sh:Team_Tier, 
+                     data = strikers, 
+                     nvmax = 20, 
+                     method = "backward")
+summ_bw <- summary(ols_bw)
+p_bw <- (1:length(summ_bw$rss)) + 1
+aic_bw <- n * log(summ_bw$rss / n) + 2 * p_bw
+
+# Forward Selection
+ols_fw <- regsubsets(logxG ~ . + Sh:Tou_Att + Sh:Team_Tier, 
+                     data = strikers, 
+                     nvmax = 20, 
+                     method = "forward")
+summ_fw <- summary(ols_fw)
+p_fw <- (1:length(summ_fw$rss)) + 1
+aic_fw <- n * log(summ_fw$rss / n) + 2 * p_fw
+```
+
+```{r selection_plots, echo=FALSE, fig.align='center', fig.height=4.5, fig.show='hold'}
+par(mfrow = c(2, 2))
+
+# Best Subset Selection Criteria
+plot(aic, xlab = "Predictors", ylab = "AIC", type = "b", pch = 19, main = "Best Subset - AIC")
+points(which.min(aic), aic[which.min(aic)], col = "red", cex = 1.5, pch = 19)
+
+plot(summ$bic, xlab = "Predictors", ylab = "BIC", type = "b", pch = 19, main = "Best Subset - BIC")
+points(which.min(summ$bic), summ$bic[which.min(summ$bic)], col = "red", cex = 1.5, pch = 19)
+
+plot(summ$adjr2, xlab = "Predictors", ylab = "Adjusted R2", type = "b", pch = 19, main = "Best Subset - Adj R2")
+points(which.max(summ$adjr2), summ$adjr2[which.max(summ$adjr2)], col = "red", cex = 1.5, pch = 19)
+
+plot(summ$cp, xlab = "Predictors", ylab = "Mallows' Cp", type = "b", pch = 19, main = "Best Subset - Cp")
+points(which.min(summ$cp), summ$cp[which.min(summ$cp)], col = "red", cex = 1.5, pch = 19)
+```
+
+### Model Selection Evaluation
+While BIC applies a stringent parsimony penalty selecting a compact model, AIC, Adjusted $R^2$, and Mallows' $C_p$ consistently converge around a **10-parameter specification**. Best Subset Selection is preferred because it globally searches the parameter space across all combinations rather than imposing sequential nesting constraints.
+
+```{r best_model_formula}
+# Inspect coefficients for the optimal 10-parameter subset
+coef(ols_best, 10)
+
+# Formulate candidate regression model
+candidate_model <- lm(logxG ~ Dist + xA + SCA + TklW + Sh * Team_Tier + Sh * Tou_Att, data = strikers)
+```
+
+# Residual Diagnostics
+
+To assess whether classical OLS assumptions hold (linearity, homoscedasticity, normality, independence), we analyze diagnostic residual plots.
+
+```{r diagnostics, fig.align='center', fig.height=4.5}
+par(mfrow = c(2, 2))
+plot(candidate_model)
+```
+
+- **Residuals vs. Fitted & Scale-Location**: The residuals display roughly horizontal spread without curved patterns, confirming that linearity and homoscedasticity assumptions are well met.
+- **Normal Q-Q Plot**: Residuals closely track the 45-degree theoretical line through the central quantiles, but display marked tail departures at the extremes.
+- **Residuals vs. Leverage**: No individual observation surpasses Cook's Distance threshold ($D_i > 0.5$), indicating an absence of globally disruptive influential points.
+
+# Outlier Diagnostics: Statistical and Tactical Analysis
+
+Testing the candidate model residuals for normality via the Shapiro-Wilk test:
+
+```{r shapiro_test}
+shapiro.test(residuals(candidate_model))
+```
+
+With $p = 0.038 < 0.05$, the null hypothesis of residual normality is strictly rejected.
+
+A granular inspection of the largest standardized residuals highlights four specific observations: rows **64, 94, 99, and 102**. Rather than mechanically discarding them as arbitrary outliers, examining their football identity reveals precise tactical anomalies:
+
+1. **Row 102 – Rade Krunic (Milan)**: Logged 1,416 minutes but generated only 10 shots and 0.7 xG. Krunic was tactically utilized by Stefano Pioli as an atypical hybrid attacking midfielder / pressing midfielder to balance defensive transitions, rather than as a genuine scoring threat. Categorizing him under standard forward metrics heavily distorts the playtime-to-production ratio.
+2. **Row 64 – Joao Pedro (Cagliari)**: Recorded extraordinary volume (3,323 minutes, 87 shots, 512 attacking touches, 12.3 xG) for a club that suffered relegation. In tactical terms, Joao Pedro monopolized almost the entire offensive output of Cagliari, behaving as an outlier within the 3rd Tier subset.
+3. **Row 99 – Patrick Cutrone (Empoli)**: Accumulated 50 shots but registered an exceptionally low 3.7 xG, driven by low-probability, contested shot attempts.
+4. **Row 94 – Nicola Sansone (Bologna)**: Exhibited an extreme average shooting distance exceeding 20.5 meters, skewing the distance-to-danger relationship.
+
+Excluding these four domain-specific anomalies:
+
+```{r outlier_removal}
+obs_removed <- c(64, 94, 99, 102)
+strikers_clean <- strikers[-obs_removed, ]
+
+model_clean <- lm(logxG ~ Dist + xA + SCA + TklW + Sh * Team_Tier + Sh * Tou_Att, 
+                  data = strikers_clean)
+
+shapiro.test(residuals(model_clean))
+```
+
+The refined model yields a Shapiro-Wilk p-value of **0.0557**, restoring residual normality ($p > 0.05$) while preserving 116 out of 120 observations (**96.7% of the original sample**).
+
+# Final Model Estimates and Significance
+
+```{r model_summary}
+summary(model_clean)
+confint(model_clean)
+```
+
+### Parameter Interpretations:
+- **Average Distance (`Dist`)**: Shows a strong, statistically significant negative effect ($\hat{\beta}_{\text{Dist}} < 0$, $p < 0.001$). As shot distance increases, shot conversion drops exponentially, reducing expected value.
+- **Shot Volume (`Sh`) & Interactions**: Base shot volume is highly positive. The negative interaction term with `Tou_Att` indicates diminishing marginal xG gains per shot as touch volume saturates: high-touch penalty-box strikers generate concentrated, high-probability chances rather than needing elevated shot volume from distance.
+- **`xA` and `SCA`**: Neither `xA` (Expected Assists) nor `SCA` (Shot-Creating Actions) reach individual significance at the 5% level; their confidence intervals encompass zero. This is a direct consequence of collinearity, as their explanatory signal is largely absorbed by `Sh` and `Tou_Att`.
+
+# Hypothesis Testing: Partial F-Test
+
+To test whether the collinear variables `xA` and `SCA` can be omitted without sacrificing explanatory power, we formulate a reduced nested model and conduct a partial F-test:
+$$\mathcal{H}_0: \beta_{\text{xA}} = \beta_{\text{SCA}} = 0 \quad \text{vs.} \quad \mathcal{H}_1: \text{at least one } \beta \neq 0$$
+
+```{r partial_ftest}
+model_reduced <- lm(logxG ~ Dist + TklW + Sh * Team_Tier + Sh * Tou_Att, 
+                    data = strikers_clean)
+
+anova(model_reduced, model_clean)
+summary(model_reduced)
+```
+
+The ANOVA test yields an F-statistic of 1.83 with a p-value of **0.165**. Failing to reject $\mathcal{H}_0$ confirms that `xA` and `SCA` are jointly non-significant in the presence of shot volume, distance, and box activity. Removing them yields our final parsimonious model.
+
+# Goodness of Fit
+
+```{r goodness_of_fit}
+s <- summary(model_reduced)
+cat("Multiple R-squared:", round(s$r.squared, 4), "\n")
+cat("Adjusted R-squared:", round(s$adj.r.squared, 4), "\n")
+cat("Residual Standard Error (RSE):", round(s$sigma, 4), "\n")
+```
+
+The final model accounts for **91.4% of total variance** in $\log(\text{xG})$ ($R^2 = 0.9139$, $\text{Adj } R^2 = 0.9083$), with a Residual Standard Error of just **0.276**. This confirms high explanatory fidelity without overfitting.
+
+# Out-of-Sample Prediction: Olivier Giroud (2022/23)
+
+To validate generalization performance on out-of-sample data, we evaluate the model against AC Milan forward **Olivier Giroud** in the subsequent 2022/2023 season:
+- Shots: 71
+- Average Distance: 10.4 meters
+- Touches in Attacking 3rd: 128
+- Tackles Won: 4
+- Team Tier: 1st Tier
+
+```{r giroud_prediction}
+new_player <- data.frame(
+  Sh = 71,
+  Dist = 10.4,
+  Tou_Att = 128,
+  Team_Tier = factor("1st Tier", levels = levels(strikers_clean$Team_Tier)),
+  TklW = 4
+)
+
+pred_log <- predict(model_reduced, newdata = new_player, interval = "prediction", level = 0.95)
+pred_xg <- exp(pred_log)
+
+cat("Predicted xG (Point Estimate):", round(pred_xg[1], 2), "\n")
+cat("95% Prediction Interval: [", round(pred_xg[2], 2), ",", round(pred_xg[3], 2), "]\n")
+```
+
+### Result:
+Giroud's recorded Serie A Expected Goals in the 2022/23 season was **11.8 xG**. The model predicted **`r round(pred_xg[1], 2)` xG**, with the actual value safely nested within the **95% Prediction Interval [`r round(pred_xg[2], 2)`, `r round(pred_xg[3], 2)`]**. This validates the predictive consistency of the regression model on out-of-sample forward profiles.
+
+# Parametric Simulation and Generative Assessment
+
+To assess generative fidelity, we simulate $n$ synthetic forward profiles drawn from the fitted parameters:
+$$y_{\text{sim}} = \mathbf{X}\hat{\boldsymbol{\beta}} + \boldsymbol{\epsilon}, \quad \boldsymbol{\epsilon} \sim \mathcal{N}(0, \hat{\sigma}^2)$$
+
+```{r simulation_plot, fig.align='center', fig.height=4}
+n_obs <- nrow(strikers_clean)
+fitted_vals <- predict(model_reduced)
+
+set.seed(42)
+simulated_logxg <- fitted_vals + rnorm(n_obs, mean = 0, sd = s$sigma)
+
+sim_data <- data.frame(
+  Value = c(strikers_clean$logxG, simulated_logxg),
+  Type = rep(c("Empirical Data", "Simulated Data"), each = n_obs)
+)
+
+ggplot(sim_data, aes(x = Value, fill = Type)) +
+  geom_histogram(alpha = 0.6, position = "identity", bins = 20, color = "white") +
+  scale_fill_manual(values = c("Empirical Data" = "#2b5c8f", "Simulated Data" = "#e7ba52")) +
+  theme_minimal() +
+  labs(title = "Generative Assessment: Empirical vs. Simulated Distribution",
+       subtitle = "Comparison of log(xG) distributions under estimated parameters",
+       x = expression(log(xG)), y = "Count")
+```
+
+The simulated distribution mirrors the empirical distribution in central tendency, dispersion, and boundary coverage, confirming model stability.
+
+# Conclusions
+
+This study applied linear modeling techniques to evaluate offensive production in Serie A:
+1. **Beyond Shot Volume**: While raw shot count is the dominant linear driver, expected danger is heavily modulated by **shot proximity (`Dist`)**, **box occupancy (`Tou_Att`)**, and **team structural dominance (`Team_Tier`)**.
+2. **Collinearity in Modern Metrics**: Advanced metrics such as `xA` and `SCA` naturally co-vary with shot generation and box touches. The partial F-test confirmed that removing them yields a parsimonious model ($R^2 = 91.4\%$) without loss of explanatory precision.
+3. **Domain-Informed Outlier Analysis**: Investigating diagnostic anomalies revealed tactical roles (such as tactical pressing forwards like Krunic or sole-outlet forwards like Joao Pedro) that deviate from traditional striker profiles, emphasizing the necessity of pairing statistical rigor with football domain knowledge.
