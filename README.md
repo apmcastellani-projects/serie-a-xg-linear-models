@@ -8,7 +8,7 @@
 
 > **Author**: **Alessandro Castellani**  
 > *Undergraduate background in Mathematics (Università dell'Insubria) | Graduate coursework in Applied Statistics & Data Science (Università Cattolica del Sacro Cuore)*  
-> 📬 [alecaste041202@gmail.com](mailto:alecaste041202@gmail.com) | 🔗 [LinkedIn Profile](https://www.linkedin.com/in/alessandro-castellani/) | 🐙 [GitHub Profile](https://github.com/Alecaste96)
+> 📬 [alecaste041202@gmail.com](mailto:alecaste041202@gmail.com) | 🔗 [LinkedIn Profile](https://www.linkedin.com/in/alessandro-castellani/) | 🐙 [GitHub Profile](https://github.com/apmcastellani-projects)
 
 ---
 
@@ -123,7 +123,7 @@ To reproduce the analysis locally:
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/Alecaste96/serie-a-xg-linear-models.git
+   git clone https://github.com/apmcastellani-projects/serie-a-xg-linear-models.git
    cd serie-a-xg-linear-models
    ```
 2. Open R or RStudio and ensure required libraries are installed:
@@ -144,4 +144,4 @@ I am actively seeking **internship and analytical collaboration opportunities** 
 - **Email**: [alecaste041202@gmail.com](mailto:alecaste041202@gmail.com)
 - **Phone**: +39 333 528 8084
 - **LinkedIn**: [linkedin.com/in/alessandro-castellani](https://www.linkedin.com/in/alessandro-castellani/)
-- **GitHub**: [github.com/Alecaste96](https://github.com/Alecaste96)
+- **GitHub**: [github.com/apmcastellani-projects](https://github.com/apmcastellani-projects)
